@@ -62,6 +62,15 @@ const HALAL_RULES = {
   },
 };
 
+// What a fuller AAOIFI-style screen checks that this tool doesn't --
+// confirmed against a real screening app's output for Vedanta Ltd,
+// which failed specifically on "illiquid assets / total assets" (a
+// ratio requiring balance-sheet line items Yahoo's free API doesn't
+// expose for individual stocks). Appended to every halal verdict so
+// a "Pass" here is never mistaken for a complete clearance.
+const UNSCREENED_NOTE =
+  "Not screened here (needs data beyond Yahoo's free API): illiquid assets/total assets, non-compliant investments/total assets, receivables/market cap.";
+
 function classifyHalal({ name, sector, industry, marketCap, totalDebt, totalCash }) {
   const haystack = `${sector || ""} ${industry || ""}`.toLowerCase();
   const hitSector = HALAL_RULES.excludedKeywords.find((kw) => haystack.includes(kw));
@@ -76,52 +85,126 @@ function classifyHalal({ name, sector, industry, marketCap, totalDebt, totalCash
   // a final answer either way.
   const looksIslamicByName = /islamic|shari(a|'a|ah)|takaful/i.test(name || "");
   const isConventionalFinanceHit = hitSector && HALAL_RULES.conventionalFinanceKeywords.includes(hitSector);
+  const sectorFails = hitSector && !(looksIslamicByName && isConventionalFinanceHit);
+  const businessLabel = industry || sector || "Unclassified";
 
-  if (hitSector && !(looksIslamicByName && isConventionalFinanceHit)) {
+  const hasMarketCap = typeof marketCap === "number" && marketCap > 0;
+  const debtRatio = hasMarketCap && typeof totalDebt === "number" ? (totalDebt / marketCap) * 100 : null;
+  const cashRatio = hasMarketCap && typeof totalCash === "number" ? (totalCash / marketCap) * 100 : null;
+
+  const ratioStatus = (ratio) => {
+    if (ratio === null) return "not_screened";
+    if (ratio > HALAL_RULES.ratioPct.failAbove) return "fail";
+    if (ratio > HALAL_RULES.ratioPct.reviewAbove) return "review";
+    return "pass";
+  };
+  const debtStatus = ratioStatus(debtRatio);
+  const cashStatus = ratioStatus(cashRatio);
+
+  // Structured, per-criterion breakdown -- this is what the UI's
+  // "Halal Breakdown" section renders directly, so a "Pass"/"Fail"
+  // badge is never the only thing shown; the reasoning behind it
+  // (and exactly what wasn't checked) is always visible alongside it.
+  const halalChecks = [
+    {
+      key: "business",
+      label: "Business activity",
+      value: businessLabel,
+      status: sectorFails ? "fail" : "pass",
+      detail: sectorFails
+        ? `Matches excluded category "${hitSector}".`
+        : hitSector
+        ? `Name suggests an Islamic institution -- "${hitSector}" sector exclusion overridden. Verify manually.`
+        : "No excluded-sector keyword matched.",
+    },
+    {
+      key: "debt",
+      label: "Interest-bearing debt / market cap",
+      value: debtRatio !== null ? `${debtRatio.toFixed(1)}%` : null,
+      status: debtStatus,
+      threshold: `< ${HALAL_RULES.ratioPct.reviewAbove}%`,
+      detail: debtRatio === null ? "Market cap or total debt figure unavailable." : null,
+    },
+    {
+      key: "cash",
+      label: "Cash & securities / market cap",
+      value: cashRatio !== null ? `${cashRatio.toFixed(1)}%` : null,
+      status: cashStatus,
+      threshold: `< ${HALAL_RULES.ratioPct.reviewAbove}%`,
+      detail: cashRatio === null ? "Market cap or total cash figure unavailable." : null,
+    },
+    {
+      key: "illiquid",
+      label: "Illiquid assets / total assets",
+      value: null,
+      status: "not_screened",
+      detail: "Needs balance-sheet line items Yahoo's free API doesn't expose for individual stocks.",
+    },
+    {
+      key: "investments",
+      label: "Non-compliant investments / total assets",
+      value: null,
+      status: "not_screened",
+      detail: "Not available from the free data source used here.",
+    },
+    {
+      key: "receivables",
+      label: "Receivables / market cap",
+      value: null,
+      status: "not_screened",
+      detail: "Not available from the free data source used here.",
+    },
+  ];
+
+  // Overall verdict + short note -- logic unchanged from before, just
+  // reading from the same intermediate values the checks above use.
+  if (sectorFails) {
     return {
       halal: "Fail",
-      halalNote: `Business activity ("${industry || sector}") matches excluded category "${hitSector}".`,
+      halalNote: `Business activity ("${businessLabel}") matches excluded category "${hitSector}". ${UNSCREENED_NOTE}`,
+      halalChecks,
     };
   }
 
-  if (typeof marketCap !== "number" || marketCap <= 0) {
+  if (!hasMarketCap) {
     return {
       halal: "Review",
-      halalNote: "Business activity looks clear, but market cap wasn't available to screen the debt/cash ratios.",
+      halalNote: `Business activity looks clear, but market cap wasn't available to screen the debt/cash ratios. ${UNSCREENED_NOTE}`,
+      halalChecks,
     };
   }
-
-  const debtRatio = typeof totalDebt === "number" ? (totalDebt / marketCap) * 100 : null;
-  const cashRatio = typeof totalCash === "number" ? (totalCash / marketCap) * 100 : null;
 
   if (debtRatio === null && cashRatio === null) {
     return {
       halal: "Review",
-      halalNote: "Business activity looks clear, but debt/cash figures weren't available to screen leverage.",
+      halalNote: `Business activity looks clear, but debt/cash figures weren't available to screen leverage. ${UNSCREENED_NOTE}`,
+      halalChecks,
     };
   }
 
   const failed = [];
   const reviewed = [];
   if (debtRatio !== null) {
-    if (debtRatio > HALAL_RULES.ratioPct.failAbove) failed.push(`debt ${debtRatio.toFixed(1)}%`);
-    else if (debtRatio > HALAL_RULES.ratioPct.reviewAbove) reviewed.push(`debt ${debtRatio.toFixed(1)}%`);
+    if (debtStatus === "fail") failed.push(`debt ${debtRatio.toFixed(1)}%`);
+    else if (debtStatus === "review") reviewed.push(`debt ${debtRatio.toFixed(1)}%`);
   }
   if (cashRatio !== null) {
-    if (cashRatio > HALAL_RULES.ratioPct.failAbove) failed.push(`cash/securities ${cashRatio.toFixed(1)}%`);
-    else if (cashRatio > HALAL_RULES.ratioPct.reviewAbove) reviewed.push(`cash/securities ${cashRatio.toFixed(1)}%`);
+    if (cashStatus === "fail") failed.push(`cash/securities ${cashRatio.toFixed(1)}%`);
+    else if (cashStatus === "review") reviewed.push(`cash/securities ${cashRatio.toFixed(1)}%`);
   }
 
   if (failed.length) {
     return {
       halal: "Fail",
-      halalNote: `${failed.join(" and ")} of market cap exceeds the ${HALAL_RULES.ratioPct.failAbove}% limit. (Receivables ratio not screened -- unavailable for free.)`,
+      halalNote: `${failed.join(" and ")} of market cap exceeds the ${HALAL_RULES.ratioPct.failAbove}% limit. ${UNSCREENED_NOTE}`,
+      halalChecks,
     };
   }
   if (reviewed.length) {
     return {
       halal: "Review",
-      halalNote: `${reviewed.join(" and ")} of market cap is above the ${HALAL_RULES.ratioPct.reviewAbove}% comfort threshold. (Receivables ratio not screened -- unavailable for free.)`,
+      halalNote: `${reviewed.join(" and ")} of market cap is above the ${HALAL_RULES.ratioPct.reviewAbove}% comfort threshold. ${UNSCREENED_NOTE}`,
+      halalChecks,
     };
   }
 
@@ -130,7 +213,8 @@ function classifyHalal({ name, sector, industry, marketCap, totalDebt, totalCash
   if (cashRatio !== null) parts.push(`cash/securities ${cashRatio.toFixed(1)}%`);
   return {
     halal: "Pass",
-    halalNote: `Business activity clear; ${parts.join(" and ")} of market cap, both within threshold. (Receivables ratio not screened -- unavailable for free.)`,
+    halalNote: `Business activity clear; ${parts.join(" and ")} of market cap, both within threshold. ${UNSCREENED_NOTE}`,
+    halalChecks,
   };
 }
 
@@ -327,6 +411,7 @@ async function getStockData(rawTicker) {
       desc: truncateWords(assetProfile.longBusinessSummary, 15),
       halal: halalResult.halal,
       halalNote: halalResult.halalNote,
+      halalChecks: halalResult.halalChecks,
       trend: trendResult.trend,
       trendNote: trendResult.trendNote,
       risk,
