@@ -40,51 +40,97 @@ const HALAL_RULES = {
     "credit services",
     "mortgage finance",
   ],
-  // Simplified leverage screen. Real AAOIFI-style screens compare
-  // interest-bearing debt to *market cap*; we only have Yahoo's
-  // debt/equity (%) for free, so we use that as a proxy. Treat the
-  // thresholds as a starting point, not a fatwa.
-  debtEquityPct: {
+  // Sector/industry keywords that specifically mean "conventional
+  // financial institution" -- used only to decide whether the
+  // name-based Islamic-finance carve-out below can apply. Widening
+  // this list widens what the carve-out can override.
+  conventionalFinanceKeywords: ["banks", "insurance", "credit services", "mortgage finance"],
+  // Financial-ratio screen, approximating the AAOIFI / S&P Dow Jones
+  // Islamic Market / MSCI Islamic style test:
+  //   (1) interest-bearing debt / market cap < ~33%
+  //   (2) cash + interest-bearing securities / market cap < ~33%
+  // Real methodologies also check (3) receivables / market cap < 33%,
+  // and several of them use a smoothed *trailing 36-month average*
+  // market cap rather than today's spot price, specifically to avoid
+  // a stock flipping compliance status on short-term price swings.
+  // This implementation only does (1) and (2), against spot market
+  // cap -- see the limitations note in the README. Treat these
+  // numbers as a reasonable starting point, not a fatwa.
+  ratioPct: {
     reviewAbove: 33,
     failAbove: 45,
   },
 };
 
-function classifyHalal({ sector, industry, debtToEquity }) {
+function classifyHalal({ name, sector, industry, marketCap, totalDebt, totalCash }) {
   const haystack = `${sector || ""} ${industry || ""}`.toLowerCase();
   const hitSector = HALAL_RULES.excludedKeywords.find((kw) => haystack.includes(kw));
 
-  if (hitSector) {
+  // Weak carve-out: Yahoo classifies e.g. "Dubai Islamic Bank" or
+  // "Qatar Islamic Bank" under the same generic "Banks" industry as
+  // any conventional bank, which would otherwise wrongly fail them
+  // here. This only catches institutions that say so in their own
+  // name -- it will miss ones that don't (Al Rajhi Bank, one of the
+  // world's largest Islamic banks, has no "Islamic" in its name), so
+  // treat a "Fail" on any bank/insurer as worth a manual check, not
+  // a final answer either way.
+  const looksIslamicByName = /islamic|shari(a|'a|ah)|takaful/i.test(name || "");
+  const isConventionalFinanceHit = hitSector && HALAL_RULES.conventionalFinanceKeywords.includes(hitSector);
+
+  if (hitSector && !(looksIslamicByName && isConventionalFinanceHit)) {
     return {
       halal: "Fail",
       halalNote: `Business activity ("${industry || sector}") matches excluded category "${hitSector}".`,
     };
   }
 
-  if (typeof debtToEquity !== "number") {
+  if (typeof marketCap !== "number" || marketCap <= 0) {
     return {
       halal: "Review",
-      halalNote: "Business activity looks clear, but debt/equity data wasn't available to screen leverage.",
+      halalNote: "Business activity looks clear, but market cap wasn't available to screen the debt/cash ratios.",
     };
   }
 
-  if (debtToEquity > HALAL_RULES.debtEquityPct.failAbove) {
+  const debtRatio = typeof totalDebt === "number" ? (totalDebt / marketCap) * 100 : null;
+  const cashRatio = typeof totalCash === "number" ? (totalCash / marketCap) * 100 : null;
+
+  if (debtRatio === null && cashRatio === null) {
+    return {
+      halal: "Review",
+      halalNote: "Business activity looks clear, but debt/cash figures weren't available to screen leverage.",
+    };
+  }
+
+  const failed = [];
+  const reviewed = [];
+  if (debtRatio !== null) {
+    if (debtRatio > HALAL_RULES.ratioPct.failAbove) failed.push(`debt ${debtRatio.toFixed(1)}%`);
+    else if (debtRatio > HALAL_RULES.ratioPct.reviewAbove) reviewed.push(`debt ${debtRatio.toFixed(1)}%`);
+  }
+  if (cashRatio !== null) {
+    if (cashRatio > HALAL_RULES.ratioPct.failAbove) failed.push(`cash/securities ${cashRatio.toFixed(1)}%`);
+    else if (cashRatio > HALAL_RULES.ratioPct.reviewAbove) reviewed.push(`cash/securities ${cashRatio.toFixed(1)}%`);
+  }
+
+  if (failed.length) {
     return {
       halal: "Fail",
-      halalNote: `Debt/equity of ${debtToEquity.toFixed(1)}% exceeds the ${HALAL_RULES.debtEquityPct.failAbove}% leverage limit.`,
+      halalNote: `${failed.join(" and ")} of market cap exceeds the ${HALAL_RULES.ratioPct.failAbove}% limit. (Receivables ratio not screened -- unavailable for free.)`,
     };
   }
-
-  if (debtToEquity > HALAL_RULES.debtEquityPct.reviewAbove) {
+  if (reviewed.length) {
     return {
       halal: "Review",
-      halalNote: `Debt/equity of ${debtToEquity.toFixed(1)}% is above the ${HALAL_RULES.debtEquityPct.reviewAbove}% comfort threshold.`,
+      halalNote: `${reviewed.join(" and ")} of market cap is above the ${HALAL_RULES.ratioPct.reviewAbove}% comfort threshold. (Receivables ratio not screened -- unavailable for free.)`,
     };
   }
 
+  const parts = [];
+  if (debtRatio !== null) parts.push(`debt ${debtRatio.toFixed(1)}%`);
+  if (cashRatio !== null) parts.push(`cash/securities ${cashRatio.toFixed(1)}%`);
   return {
     halal: "Pass",
-    halalNote: `Business activity clear; debt/equity of ${debtToEquity.toFixed(1)}% is within threshold.`,
+    halalNote: `Business activity clear; ${parts.join(" and ")} of market cap, both within threshold. (Receivables ratio not screened -- unavailable for free.)`,
   };
 }
 
@@ -127,7 +173,7 @@ function buildRiskNote({ beta, debtToEquity, vsAthPct }) {
   if (typeof beta === "number" && beta >= 1.5) {
     return `High beta (${beta.toFixed(2)}) -- this tends to move more sharply than the broader market.`;
   }
-  if (typeof debtToEquity === "number" && debtToEquity >= HALAL_RULES.debtEquityPct.failAbove) {
+  if (typeof debtToEquity === "number" && debtToEquity >= HALAL_RULES.ratioPct.failAbove) {
     return `Elevated leverage (debt/equity ${debtToEquity.toFixed(1)}%) increases sensitivity to rate changes.`;
   }
   if (typeof vsAthPct === "number" && vsAthPct <= -40) {
@@ -236,10 +282,19 @@ async function getStockData(rawTicker) {
     const debtToEquity = typeof financialData.debtToEquity === "number" ? financialData.debtToEquity : null;
     const beta = typeof keyStats.beta === "number" ? keyStats.beta : typeof summaryDetail.beta === "number" ? summaryDetail.beta : null;
 
+    // Raw numeric market cap (needed for the ratio math below) --
+    // separate from `mktCap`, the compact display string built later.
+    const marketCapRaw = typeof summaryDetail.marketCap === "number" ? summaryDetail.marketCap : typeof price.marketCap === "number" ? price.marketCap : null;
+    const totalDebt = typeof financialData.totalDebt === "number" ? financialData.totalDebt : null;
+    const totalCash = typeof financialData.totalCash === "number" ? financialData.totalCash : null;
+
     const halalResult = classifyHalal({
+      name: price.longName || price.shortName || ticker,
       sector: assetProfile.sector,
       industry: assetProfile.industry,
-      debtToEquity,
+      marketCap: marketCapRaw,
+      totalDebt,
+      totalCash,
     });
     const trendResult = classifyTrend(priceHistory);
     const risk = buildRiskNote({ beta, debtToEquity, vsAthPct });
@@ -262,7 +317,7 @@ async function getStockData(rawTicker) {
       athDate,
       vsAthPct,
       priceHistory,
-      mktCap: fmtCompact(summaryDetail.marketCap ?? price.marketCap, "") || null,
+      mktCap: fmtCompact(marketCapRaw, "") || null,
       de: debtToEquity !== null ? `${debtToEquity.toFixed(1)}%` : null,
       beta,
       divYield: divYieldPct,
@@ -287,4 +342,4 @@ async function getStockData(rawTicker) {
   }
 }
 
-module.exports = { getStockData, HALAL_RULES };
+module.exports = { getStockData, classifyHalal, classifyTrend, buildRiskNote, HALAL_RULES };
