@@ -408,7 +408,7 @@ export default function StockResearchDesk() {
         <div className="mt-12 text-center" style={{ color: "#4A5670", fontSize: 11, fontFamily: "'IBM Plex Mono', monospace", lineHeight: 1.6 }}>
           Figures are pulled live from free market-data endpoints and can be wrong, stale, or delayed {"\u2014"} verify before acting.
           <br />
-          Halal screen is a simplified, editable rule set (see server.js), not a certified Sharia compliance check.
+          Halal screen is a partial, editable ratio-based rule set (see lib/stockLogic.js) covering 2 of 3 standard AAOIFI-style ratios, not a certified Sharia compliance check.
         </div>
       </div>
     </div>
