@@ -68,6 +68,41 @@ function ChartTooltip({ active, payload, label, currency }) {
   );
 }
 
+function HalalCheckRow({ check }) {
+  const statusMap = {
+    pass: { label: "PASS", color: PINE },
+    review: { label: "REVIEW", color: BRASS },
+    fail: { label: "FAIL", color: RUST },
+    not_screened: { label: "N/A", color: "#A69C86" },
+  };
+  const cfg = statusMap[check.status] || statusMap.not_screened;
+  return (
+    <div className="py-1.5" style={{ borderBottom: `1px solid ${PARCHMENT_LINE}` }}>
+      <div className="flex items-baseline justify-between gap-3">
+        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "#4A4438" }}>
+          {check.label}
+          {check.value ? <span style={{ color: "#8A806C" }}> {"\u2014"} {check.value}</span> : null}
+        </span>
+        <span
+          style={{
+            fontFamily: "'IBM Plex Mono', monospace",
+            fontSize: 10.5,
+            fontWeight: 600,
+            color: cfg.color,
+            letterSpacing: 0.5,
+            whiteSpace: "nowrap",
+          }}
+        >
+          {cfg.label}
+        </span>
+      </div>
+      {check.detail && (
+        <div style={{ fontSize: 11, color: "#A69C86", marginTop: 1, lineHeight: 1.35 }}>{check.detail}</div>
+      )}
+    </div>
+  );
+}
+
 function Row({ label, value }) {
   return (
     <div
@@ -366,6 +401,25 @@ export default function StockResearchDesk() {
               </div>
               <p style={{ color: "#4A4438", fontSize: 14, lineHeight: 1.5, marginBottom: 14 }}>{data.halalNote}</p>
 
+              {Array.isArray(data.halalChecks) && data.halalChecks.length > 0 && (
+                <div className="mb-4">
+                  <div
+                    style={{
+                      fontFamily: "'IBM Plex Mono', monospace",
+                      fontSize: 11,
+                      color: "#8A806C",
+                      letterSpacing: 0.5,
+                      marginBottom: 4,
+                    }}
+                  >
+                    HALAL BREAKDOWN
+                  </div>
+                  {data.halalChecks.map((check) => (
+                    <HalalCheckRow key={check.key} check={check} />
+                  ))}
+                </div>
+              )}
+
               <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: "#8A806C", letterSpacing: 0.5, marginBottom: 4 }}>
                 TREND NOTE
               </div>
@@ -408,7 +462,7 @@ export default function StockResearchDesk() {
         <div className="mt-12 text-center" style={{ color: "#4A5670", fontSize: 11, fontFamily: "'IBM Plex Mono', monospace", lineHeight: 1.6 }}>
           Figures are pulled live from free market-data endpoints and can be wrong, stale, or delayed {"\u2014"} verify before acting.
           <br />
-          Halal screen is a partial, editable ratio-based rule set (see lib/stockLogic.js) covering 2 of 3 standard AAOIFI-style ratios, not a certified Sharia compliance check.
+          Halal screen checks business activity + 2 of ~5 standard AAOIFI-style ratios (see Halal Note below, and lib/stockLogic.js) &mdash; not a certified Sharia compliance check.
         </div>
       </div>
     </div>
